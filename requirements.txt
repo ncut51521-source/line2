@@ -1,0 +1,7 @@
+Flask
+line-bot-sdk
+pandas
+mplfinance
+requests
+matplotlib
+gunicorn
