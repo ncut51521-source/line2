@@ -51,7 +51,7 @@ def get_stock_kline(sid):
     except:
         return None
 
-@app.route("/callback", methods=['POST'])
+https://line2-xxh5.onrender.com/callback
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
