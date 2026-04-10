@@ -9,10 +9,11 @@ import mplfinance as mpf
 app = Flask(__name__)
 
 # ========= 設定區 =========
-# 填入你從 LINE Developers 取得的資訊
-LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU=" #
-LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" #
-# Imgur 用於存放 K 線圖網址 (LINE 規定必須使用 https 圖片連結)
+# 1. 這裡正確
+LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU=" 
+# 2. 這裡錯誤！請去 "Basic settings" 頁面更換真正的 Channel Secret
+LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" 
+# 3. Imgur ID
 IMGUR_CLIENT_ID = "54d96d74494c8e7" 
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
@@ -27,7 +28,6 @@ def get_stock_kline(sid):
         res = requests.get(url, headers=headers, timeout=10).json()
         if res.get("stat") != "OK": return None
         
-        # 整理資料
         df = pd.DataFrame(res["data"], columns=["date","cap","tur","open","high","low","close","chg","tra"])
         df["date"] = df["date"].apply(lambda d: f"{int(d.split('/')[0])+1911}-{d.split('/')[1]}-{d.split('/')[2]}")
         df = df.rename(columns={"date":"Date","open":"Open","high":"High","low":"Low","close":"Close","cap":"Volume"})
@@ -35,11 +35,9 @@ def get_stock_kline(sid):
         for col in ["Open","High","Low","Close","Volume"]:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(",",""), errors='coerce')
         
-        # 繪圖並存成暫存檔 (Render 環境需存於 /tmp)
         tmp_img = "/tmp/kline.png"
         mpf.plot(df.set_index("Date").tail(60), type='candle', style='yahoo', volume=True, savefig=tmp_img)
         
-        # 上傳到 Imgur 取得網址
         with open(tmp_img, "rb") as f:
             img_res = requests.post(
                 "https://api.imgur.com/3/image", 
@@ -51,7 +49,8 @@ def get_stock_kline(sid):
     except:
         return None
 
-https://line2-xxh5.onrender.com/callback
+# --- 這裡修正了語法錯誤 ---
+@app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
@@ -64,8 +63,6 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
-    
-    # 正則表達式：判斷是否為 4 位數字的股票代碼
     if re.match(r'^\d{4}$', msg):
         img_url = get_stock_kline(msg)
         if img_url:

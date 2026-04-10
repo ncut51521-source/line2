@@ -1,5 +1,5 @@
-Flask
-line-bot-sdk
+flask
+line-bot-sdk==2.3.0
 pandas
 mplfinance
 requests
