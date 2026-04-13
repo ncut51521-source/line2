@@ -62,7 +62,7 @@ def get_kline_url(sid, label):
     headers = {'User-Agent': 'Mozilla/5.0'}
     url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo={sid}"
     try:
-        # 重要修正：加入 verify=False 解決之前 Log 出現的 SSL 驗證失敗問題
+        # 重點修正：加入 verify=False 徹底解決 Log 中的 SSL 驗證失敗問題
         res = requests.get(url, headers=headers, timeout=10, verify=False).json()
         
         if res.get("stat") != "OK":
@@ -111,12 +111,12 @@ def callback():
 def handle_message(event):
     msg = event.message.text.strip()
     
-    # 輸入 4 位數字代碼
+    # 輸入 4 位數字代碼噴出選單
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_kline_panel(msg))
         return
 
-    # 處理按鈕訊息
+    # 處理點擊按鈕後的邏輯
     match = re.match(r'^(\d{4})\s+(.*)$', msg)
     if match:
         sid, label = match.groups()
@@ -130,4 +130,5 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text="❌ 暫時無法生成圖表，請稍後再試或檢查 Log。"))
 
 if __name__ == "__main__":
+    # 使用 Render 預設的 Port 10000
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
