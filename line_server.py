@@ -1,6 +1,8 @@
 import os, re, requests
 import matplotlib
-matplotlib.use('Agg')  # <--- 必須加這行，解決 Render 崩潰問題
+# 必須在所有 import 之前強制指定使用 Agg 模式，否則在 Render 執行繪圖時會崩潰
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -10,17 +12,19 @@ import mplfinance as mpf
 
 app = Flask(__name__)
 
-#
+# ========= 設定區 (請確認資料是否正確) =========
+# 1. Channel Access Token
 LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU="
-# 正確的頻道秘密
+# 2. Channel Secret (從 Basic settings 複製)
 LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" 
+# 3. Imgur Client ID
 IMGUR_CLIENT_ID = "54d96d74494c8e7"
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
 def create_kline_panel(sid):
-    """建立 K 線按鈕選單"""
+    """建立 K 線按鈕選單 (Flex Message)"""
     return FlexSendMessage(
         alt_text=f"股票 ({sid}) 選單",
         contents={
@@ -51,12 +55,16 @@ def create_kline_panel(sid):
     )
 
 def get_kline_url(sid, label):
-    """抓取資料並繪圖"""
+    """抓取證交所資料、繪圖並上傳至 Imgur"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&stockNo={sid}"
     try:
         res = requests.get(url, headers=headers, timeout=10).json()
-        if res.get("stat") != "OK": return None
+        if res.get("stat") != "OK":
+            print(f"!!! 證交所資料抓取失敗: {res.get('stat')} !!!")
+            return None
+        
+        # 資料轉換為 DataFrame
         df = pd.DataFrame(res["data"], columns=["date","cap","tur","open","high","low","close","chg","tra"])
         df["date"] = df["date"].apply(lambda d: f"{int(d.split('/')[0])+1911}-{d.split('/')[1]}-{d.split('/')[2]}")
         df = df.rename(columns={"date":"Date","open":"Open","high":"High","low":"Low","close":"Close","cap":"Volume"})
@@ -64,35 +72,59 @@ def get_kline_url(sid, label):
         for col in ["Open","High","Low","Close","Volume"]:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(",",""), errors='coerce')
         
-        tmp = "/tmp/k.png"
-        mpf.plot(df.set_index("Date").tail(60), type='candle', style='yahoo', volume=True, title=f"Stock {sid} ({label})", savefig=tmp)
+        # 繪製 K 線圖
+        tmp = "/tmp/kline.png"
+        mpf.plot(df.set_index("Date").tail(60), type='candle', style='yahoo', volume=True, mav=(5,20), 
+                 title=f"Stock {sid} ({label})", savefig=tmp)
+        
+        # 上傳至 Imgur
         with open(tmp, "rb") as f:
-            r = requests.post("https://api.imgur.com/3/image", headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"}, files={"image": f}).json()
-        return r["data"]["link"] if r.get("success") else None
-    except: return None
+            r = requests.post("https://api.imgur.com/3/image", 
+                              headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"}, 
+                              files={"image": f}).json()
+        
+        if r.get("success"):
+            return r["data"]["link"]
+        else:
+            print(f"!!! Imgur 上傳失敗: {r.get('data', {}).get('error')} !!!")
+            return None
+    except Exception as e:
+        print(f"!!! 發生繪圖錯誤: {e} !!!")
+        return None
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers.get('X-Line-Signature') or request.headers.get('X-Signature')
+    signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        print("!!! 簽章驗證失敗，請檢查你的 LINE_HANDLER_SECRET !!!")
         abort(400)
     return 'OK'
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
-    # 偵測 4 位數代碼
+    
+    # 輸入 4 位數字代碼，噴出按鈕選單
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_kline_panel(msg))
-    # 處理按鈕回傳訊息
+        return
+
+    # 處理點擊按鈕後的文字 (例如: 2330 日線)
     match = re.match(r'^(\d{4})\s+(.*)$', msg)
     if match:
         sid, label = match.groups()
         url = get_kline_url(sid, label)
-        if url: line_bot_api.reply_message(event.reply_token, [ImageSendMessage(original_content_url=url, preview_image_url=url)])
+        if url:
+            line_bot_api.reply_message(event.reply_token, [
+                TextMessage(text=f"📊 已生成 {sid} 的 {label} 圖表"),
+                ImageSendMessage(original_content_url=url, preview_image_url=url)
+            ])
+        else:
+            line_bot_api.reply_message(event.reply_token, TextMessage(text="❌ 暫時無法生成圖表，請稍後再試或檢查 Log。"))
 
 if __name__ == "__main__":
+    # Render 環境必須使用環境變數中的 PORT
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
