@@ -1,4 +1,6 @@
 import os, re, requests
+import matplotlib
+matplotlib.use('Agg')  # <--- 必須加這行，解決 Render 崩潰問題
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -8,9 +10,9 @@ import mplfinance as mpf
 
 app = Flask(__name__)
 
-# ========= 設定區 =========
-LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU="
 #
+LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU="
+# 正確的頻道秘密
 LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" 
 IMGUR_CLIENT_ID = "54d96d74494c8e7"
 
@@ -63,7 +65,7 @@ def get_kline_url(sid, label):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(",",""), errors='coerce')
         
         tmp = "/tmp/k.png"
-        mpf.plot(df.set_index("Date").tail(60), type='candle', style='yahoo', volume=True, mav=(5,20), title=f"Stock {sid} ({label})", savefig=tmp)
+        mpf.plot(df.set_index("Date").tail(60), type='candle', style='yahoo', volume=True, title=f"Stock {sid} ({label})", savefig=tmp)
         with open(tmp, "rb") as f:
             r = requests.post("https://api.imgur.com/3/image", headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"}, files={"image": f}).json()
         return r["data"]["link"] if r.get("success") else None
@@ -71,7 +73,7 @@ def get_kline_url(sid, label):
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers.get('X-Line-Signature') or request.headers.get('X-Signature')
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
@@ -82,18 +84,15 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
-    if msg in ["你好", "說明", "幫助"]:
-        line_bot_api.reply_message(event.reply_token, TextMessage(text="🤖 輸入4位股票代碼查詢，例如：2330"))
-        return
+    # 偵測 4 位數代碼
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_kline_panel(msg))
-        return
+    # 處理按鈕回傳訊息
     match = re.match(r'^(\d{4})\s+(.*)$', msg)
     if match:
         sid, label = match.groups()
         url = get_kline_url(sid, label)
-        if url:
-            line_bot_api.reply_message(event.reply_token, [ImageSendMessage(original_content_url=url, preview_image_url=url)])
+        if url: line_bot_api.reply_message(event.reply_token, [ImageSendMessage(original_content_url=url, preview_image_url=url)])
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
