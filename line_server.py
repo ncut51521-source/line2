@@ -23,28 +23,40 @@ IMGUR_CLIENT_ID = "54d96d74494c8e7"
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
-# 中文字體處理
-FONT_PATH = "NotoSansTC-Regular.otf"
-if not os.path.exists(FONT_PATH):
-    r = requests.get("https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf")
-    with open(FONT_PATH, "wb") as f: f.write(r.content)
-my_font = fm.FontProperties(fname=FONT_PATH)
+# ========= 字體下載與檢查邏輯 (修復 0x2 錯誤) =========
+FONT_PATH = "/tmp/NotoSansTC-Regular.otf"
+def setup_font():
+    # 使用更穩定的 Google Fonts 連結
+    url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf"
+    if not os.path.exists(FONT_PATH) or os.path.getsize(FONT_PATH) < 1000:
+        print("正在下載中文字體...")
+        try:
+            r = requests.get(url, timeout=30)
+            with open(FONT_PATH, "wb") as f: f.write(r.content)
+            print("字體下載完成")
+        except Exception as e:
+            print(f"字體下載失敗: {e}")
+    return fm.FontProperties(fname=FONT_PATH) if os.path.exists(FONT_PATH) else None
 
-def get_stock_info(sid):
+my_font = setup_font()
+
+# ========= 數據抓取與處理 =========
+def get_stock_name(sid):
     try:
-        res = requests.get(f"https://www.twse.com.tw/zh/api/codeQuery?query={sid}", verify=False).json()
-        return res["suggestions"][0] if res.get("suggestions") else sid
+        url = f"https://www.twse.com.tw/zh/api/codeQuery?query={sid}"
+        res = requests.get(url, verify=False, timeout=5).json()
+        return res["suggestions"][0].split(' ')[1] if res.get("suggestions") else sid
     except: return sid
 
 def get_kline_url(sid, period):
     headers = {'User-Agent': 'Mozilla/5.0'}
     all_rows = []
-    # 抓取較長數據以支援週/月線計算
-    months_to_fetch = 12 if period in ['週線', '月線'] else 5
+    # 根據週期抓取足夠長度的資料
+    fetch_months = 18 if period in ['週線', '月線'] else 6
     today = datetime.date.today()
     
     try:
-        for i in range(months_to_fetch):
+        for i in range(fetch_months):
             target_date = (today - datetime.timedelta(days=i*30)).strftime("%Y%m01")
             url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={target_date}&stockNo={sid}"
             res = requests.get(url, headers=headers, timeout=10, verify=False).json()
@@ -60,7 +72,7 @@ def get_kline_url(sid, period):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(",",""), errors='coerce')
         df = df.sort_values("Date").drop_duplicates("Date").set_index("Date")
 
-        # 根據選擇週期進行重採樣 (Resampling)
+        # 進行週期轉換
         if period == '週線':
             df = df.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
         elif period == '月線':
@@ -74,38 +86,37 @@ def get_kline_url(sid, period):
         diff_pct = (diff / prev_close) * 100
         main_color = '#E74C3C' if diff >= 0 else '#2ECC71'
 
-        # 圖表風格
+        # 繪圖設定
         mc = mpf.make_marketcolors(up='#E74C3C', down='#2ECC71', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', gridcolor='#f0f0f0', y_on_right=True, facecolor='white')
 
         tmp = "/tmp/kline.png"
-        # 繪圖並設定日期格式為 yyyy/mm/dd
-        fig, axes = mpf.plot(df.tail(40), type='candle', style=s, volume=True, 
-                             mav=(5, 20), returnfig=True, figsize=(10, 8),
-                             tight_layout=True, datetime_format='%Y/%m/%d',
+        fig, axes = mpf.plot(df.tail(45), type='candle', style=s, volume=True, 
+                             mav=(5, 20, 60), returnfig=True, figsize=(10, 8),
+                             tight_layout=True, datetime_format='%Y/%m/%d', # 格式 yyyy/mm/dd
                              volume_panel=1, panel_ratios=(6, 2))
         
-        # 左上角：名稱(代碼)
-        full_name = get_stock_info(sid)
-        fig.text(0.05, 0.93, f"{full_name}({sid})", fontproperties=my_font, fontsize=24, weight='bold', color='#2c3e50')
+        # 左上角：股票名稱(代碼)
+        name = get_stock_name(sid)
+        fig.text(0.05, 0.94, f"{name} ({sid})", fontproperties=my_font, fontsize=26, weight='bold', color='#2c3e50')
         
-        # 右上角：價格與漲跌幅 (ha='right' 靠右對齊)
+        # 右上角：現價、漲跌
         sign = "+" if diff > 0 else ""
-        price_text = f"{current_price:g}"
-        diff_text = f"{sign}{diff:g} ({sign}{diff_pct:.2f}%)"
-        fig.text(0.95, 0.93, price_text, fontsize=32, color=main_color, weight='bold', ha='right')
-        fig.text(0.95, 0.88, diff_text, fontsize=18, color=main_color, ha='right')
+        fig.text(0.95, 0.94, f"{current_price:g}", fontsize=36, color=main_color, weight='bold', ha='right')
+        fig.text(0.95, 0.89, f"{sign}{diff:g} ({sign}{diff_pct:.2f}%)", fontsize=18, color=main_color, ha='right')
 
         fig.savefig(tmp, dpi=120, bbox_inches='tight')
         plt.close(fig)
 
+        # 上傳至 Imgur
         with open(tmp, "rb") as f:
             r = requests.post("https://api.imgur.com/3/image", 
                               headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"}, 
                               files={"image": f}, verify=False).json()
-        return r["data"]["link"] if r.get("success") else "上傳失敗"
+        return r["data"]["link"] if r.get("success") else "圖片上傳失敗"
     except Exception as e: return str(e)
 
+# ========= Line Bot 邏輯 =========
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature')
@@ -128,8 +139,9 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text=f"❌ 錯誤: {url}"))
 
 def create_kline_panel(sid):
+    """橫向排列按鈕選單"""
     return FlexSendMessage(
-        alt_text=f"股票 {sid} 週期選擇",
+        alt_text=f"股票 {sid} 選單",
         contents={
           "type": "bubble",
           "body": {
