@@ -6,3 +6,6 @@ matplotlib
 mplfinance
 gunicorn
 urllib3
+yfinance
+cloudinary
+mplfinance
