@@ -69,7 +69,7 @@ def get_kline_url(sid):
                 # 取得直接圖片連結
                 return up_res.json().get('url')
             else:
-                return f"⚠️ 圖片上傳失敗，狀態碼: {up_res.status_code}"
+                return f"⚠️ 圖片傳失敗，狀態碼: {up_res.status_code}"
 
     except Exception as e:
         return f"⚠️ 系統異常: {str(e)}"
