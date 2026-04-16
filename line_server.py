@@ -13,68 +13,79 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
-# ========= 設定區 (請確認這兩項正確) =========
+# ========= 設定區 =========
 LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU="
 LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" 
+IMGUR_CLIENT_ID = "54d96d74494c8e7"
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
-def get_kline_url(sid):
+def get_kline_url(sid, label):
     headers = {'User-Agent': 'Mozilla/5.0'}
+    all_rows = []
     try:
-        # 1. 抓取資料 (只抓最近一個月，最快)
-        today = datetime.date.today().strftime("%Y%m01")
-        url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={today}&stockNo={sid}"
-        res_raw = requests.get(url, headers=headers, timeout=10, verify=False)
+        # 抓取近三個月資料以計算長波段均線
+        today = datetime.date.today()
+        for i in range(3):
+            target_date = (today - datetime.timedelta(days=i*30)).strftime("%Y%m01")
+            url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={target_date}&stockNo={sid}"
+            res = requests.get(url, headers=headers, timeout=10, verify=False).json()
+            if res.get("stat") == "OK": all_rows.extend(res["data"])
         
-        # 檢查是否為 JSON
-        try:
-            res = res_raw.json()
-        except:
-            return "❌ 證交所 API 忙碌中，請稍後再試。"
+        if not all_rows: return "ERR_DATA: 找不到資料"
 
-        if res.get("stat") != "OK": return f"❌ 找不到股票 {sid} 的資料"
-        
-        # 2. 處理資料
-        df = pd.DataFrame([row[:9] for row in res["data"]], columns=["date","cap","tur","open","high","low","close","chg","tra"])
+        # 資料處理與格式轉換
+        df = pd.DataFrame([row[:9] for row in all_rows], 
+                          columns=["date","cap","tur","open","high","low","close","chg","tra"])
         df["date"] = df["date"].apply(lambda d: f"{int(d.split('/')[0])+1911}-{d.split('/')[1]}-{d.split('/')[2]}")
         df = df.rename(columns={"date":"Date","open":"Open","high":"High","low":"Low","close":"Close","cap":"Volume"})
         df["Date"] = pd.to_datetime(df["Date"])
         for col in ["Open","High","Low","Close","Volume"]:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(",",""), errors='coerce')
-        df = df.sort_values("Date").set_index("Date")
+        df = df.sort_values("Date").drop_duplicates("Date").set_index("Date")
 
-        # 3. 繪圖 (完全不使用中文字體，避免 0x2 錯誤)
-        mc = mpf.make_marketcolors(up='#E74C3C', down='#2ECC71', edge='inherit', wick='inherit', volume='inherit')
-        s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', gridcolor='#f0f0f0')
+        # 取得最後一筆資訊用於標題欄
+        last_price = df['Close'].iloc[-1]
+        last_chg = df['Open'].iloc[-1] - last_price # 簡略計算漲跌
+        chg_pct = (last_chg / df['Open'].iloc[-1]) * 100
 
-        tmp_path = "/tmp/stock_plot.png"
-        fig, axes = mpf.plot(df.tail(25), type='candle', style=s, volume=True, figsize=(8, 6),
-                             returnfig=True, datetime_format='%m/%d')
+        # 設定台股紅漲綠跌風格
+        mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
+
+        # 繪圖並手動增加資訊文字
+        tmp = "/tmp/kline.png"
+        fig, axes = mpf.plot(df.tail(60), type='candle', style=s, volume=True, 
+                             mav=(5, 20, 60), returnfig=True, figsize=(10, 8),
+                             tight_layout=True, datetime_format='%m/%d')
         
-        # 標題使用純英文代碼
-        fig.text(0.1, 0.9, f"STOCK: {sid}", fontsize=20, weight='bold')
-        fig.savefig(tmp_path, dpi=80, bbox_inches='tight')
+        # 在最上方加入股票資訊 (模仿 App 標題欄)
+        color = 'red' if last_chg >= 0 else 'green'
+        fig.text(0.1, 0.94, f"股票 {sid}", fontsize=24, weight='bold')
+        fig.text(0.1, 0.90, f"{last_price:.2f}", fontsize=32, color=color, weight='bold')
+        fig.text(0.3, 0.90, f"{'+' if last_chg >= 0 else ''}{last_chg:.2f} ({chg_pct:.2f}%)", 
+                 fontsize=18, color=color)
+        
+        # 加入均線數值標示
+        fig.text(0.1, 0.86, f"5MA: {df['Close'].tail(5).mean():.2f}", color='blue', fontsize=10)
+        fig.text(0.25, 0.86, f"20MA: {df['Close'].tail(20).mean():.2f}", color='orange', fontsize=10)
+        fig.text(0.4, 0.86, f"60MA: {df['Close'].tail(60).mean():.2f}", color='green', fontsize=10)
+
+        # 儲存圖片並去除所有邊框
+        fig.savefig(tmp, dpi=120, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
 
-        # 4. 上傳到 Postimages (匿名免 Key 上傳)
-        with open(tmp_path, "rb") as f:
-            # 這是 Postimages 的匿名上傳介面邏輯
-            files = {'file': ('stock.png', f, 'image/png')}
-            data = {'optsize': '0', 'expire': '0', 'session': 'anonymous'}
-            up_res = requests.post("https://postimages.org/json/rr", files=files, data=data, timeout=20)
-            
-            if up_res.status_code == 200:
-                # 取得直接圖片連結
-                return up_res.json().get('url')
-            else:
-                return f"⚠️ 圖片傳失敗，狀態碼: {up_res.status_code}"
-
+        # 上傳 Imgur
+        with open(tmp, "rb") as f:
+            r = requests.post("https://api.imgur.com/3/image", 
+                              headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"}, 
+                              files={"image": f}, verify=False).json()
+        return r["data"]["link"] if r.get("success") else f"ERR_IMGUR: {r.get('data', {}).get('error')}"
     except Exception as e:
-        return f"⚠️ 系統異常: {str(e)}"
+        return f"ERR_SYSTEM: {str(e)}"
 
-# --- Webhook 與 Line 訊息處理 ---
+# --- 以下保留原本的 LINE Bot 邏輯 ---
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature')
@@ -87,28 +98,21 @@ def callback():
 def handle_message(event):
     msg = event.message.text.strip()
     if re.match(r'^\d{4}$', msg):
-        line_bot_api.reply_message(event.reply_token, create_kline_panel(msg))
-    elif "日線" in msg:
-        sid = msg.split(" ")[0]
-        img_url = get_kline_url(sid)
-        if img_url and img_url.startswith("http"):
-            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=img_url, preview_image_url=img_url))
+        line_bot_api.reply_message(event.reply_token, FlexSendMessage(
+            alt_text=f"股票 ({msg}) 選單",
+            contents={
+              "type": "bubble",
+              "header": {"type": "box", "layout": "vertical", "backgroundColor": "#2c3e50", "contents": [{"type": "text", "text": f"📈 查詢代碼: {msg}", "weight": "bold", "size": "xl", "color": "#ffffff"}]},
+              "body": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "style": "primary", "color": "#E74C3C", "action": {"type": "message", "label": "查看日線圖", "text": f"{msg} 日線"}}]}
+            }
+        ))
+    elif re.match(r'^(\d{4})\s+(.*)$', msg):
+        sid, label = re.match(r'^(\d{4})\s+(.*)$', msg).groups()
+        result = get_kline_url(sid, label)
+        if result.startswith("http"):
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=result, preview_image_url=result))
         else:
-            line_bot_api.reply_message(event.reply_token, TextMessage(text=img_url))
-
-def create_kline_panel(sid):
-    return FlexSendMessage(
-        alt_text=f"股票 {sid} 選單",
-        contents={
-          "type": "bubble",
-          "body": {
-            "type": "box", "layout": "vertical", "contents": [
-              {"type": "text", "text": f"查詢代碼: {sid}", "weight": "bold", "size": "xl"},
-              {"type": "button", "style": "primary", "margin": "md", "color": "#28a745", "action": {"type": "message", "label": "生成 K 線圖", "text": f"{sid} 日線"}}
-            ]
-          }
-        }
-    )
+            line_bot_api.reply_message(event.reply_token, TextMessage(text=f"❌ 錯誤: {result}"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
