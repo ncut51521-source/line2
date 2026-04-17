@@ -59,12 +59,9 @@ def get_kline_url(sid):
 
         if df_final.empty: return "資料量不足"
 
-        # 抓取最新一筆資訊 (用於左上角文字)
+        # 最新一筆資訊
         last_row = df_final.iloc[-1]
-        o = last_row['Open']
-        h = last_row['High']
-        l = last_row['Low']
-        c = last_row['Close']
+        o, h, l, c = last_row['Open'], last_row['High'], last_row['Low'], last_row['Close']
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
 
         # 繪圖風格
@@ -72,16 +69,22 @@ def get_kline_url(sid):
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
         tmp_path = "/tmp/k.png"
-        fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
-                             mav=(5, 10), figsize=(12, 9), returnfig=True,
-                             datetime_format='%m/%d', tight_layout=True)
         
-        # --- 核心修改：左上角顯示完整資訊 ---
-        # 第一行：代碼 + 名稱
-        fig.text(0.08, 0.92, f"{sid} {stock_name}", fontsize=24, weight='bold', color='black')
-        # 第二行：開高低收資訊 (使用小一點的字體)
+        # 增加頂部留白 (使用圖表比例設定)
+        fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
+                             mav=(5, 10), figsize=(12, 10), returnfig=True,
+                             datetime_format='%m/%d', tight_layout=False)
+        
+        # --- 視覺優化：調整文字位置與粗細 ---
+        # 第一行：代碼名稱 (y=0.96)
+        fig.text(0.08, 0.96, f"{sid} {stock_name}", fontsize=28, weight='black', color='black')
+        
+        # 第二行：開高低收 (y=0.92)
         info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
-        fig.text(0.08, 0.88, info_text, fontsize=18, color='red' if c >= o else 'green')
+        fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', color='red' if c >= o else 'green')
+
+        # 調整邊距防止文字被切到
+        plt.subplots_adjust(top=0.90)
 
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
