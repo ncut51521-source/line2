@@ -2,7 +2,7 @@ import os, re, datetime
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
-from matplotlib import font_manager  # 載入字體管理工具
+from matplotlib import font_manager
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -15,7 +15,7 @@ import cloudinary.uploader
 
 app = Flask(__name__)
 
-# ========= 核心設定 =========
+# ========= 核心設定 (LINE & Cloudinary) =========
 LINE_ACCESS_TOKEN = "yl+8P+/NQEAvmculw5AgfS3cIQ51yV63NOeHujxxBFgZKWME6Xa0Vs/eBQw7M8/thAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxygFDmgyyrqYg7kaZoLsZP6q8PdJPIKnESlz2LDNI4aAdB04t89/1O/w1cDnyilFU="
 LINE_HANDLER_SECRET = "a479ce8e693bd35d0dd5541964945456" 
 
@@ -28,6 +28,7 @@ cloudinary.config(
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
+# ========= 名稱轉代碼邏輯 =========
 def get_stock_id(name_or_id):
     name_or_id = name_or_id.upper().strip()
     if re.match(r'^\d{4,6}$', name_or_id):
@@ -37,39 +38,49 @@ def get_stock_id(name_or_id):
             return sid
     return None
 
+# ========= 核心 K 線圖生成函式 =========
 def get_kline_url(sid):
     try:
         plt.switch_backend('Agg')
         
-        # --- 1. 設定中文字體 (務必確認檔名正確) ---
-        font_path = os.path.join(os.path.dirname(__file__), "NotoSansTC-Regular.otf")
+        # 1. 精確指定字體路徑 (請確保檔案在 GitHub 根目錄)
+        font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJKtc-Regular.otf")
         if os.path.exists(font_path):
             my_font = font_manager.FontProperties(fname=font_path)
         else:
-            print("警告：找不到字體檔，中文可能顯示異常")
+            print(f"找不到字體檔: {font_path}")
             my_font = None
 
+        # 2. 抓取資料 (優先使用 twstock)
         stock = twstock.Stock(sid)
         raw_data = stock.fetch_31() 
-        if not raw_data: return "交易所連線繁忙"
+        if not raw_data:
+            return "交易所連線繁忙，請稍後再試"
 
-        # 建立數據表
+        # 3. 建立 DataFrame (屬性提取法，避開欄位長度錯誤)
         df_final = pd.DataFrame([
-            {'Date': d.date, 'Open': d.open, 'High': d.high, 'Low': d.low, 'Close': d.close, 'Volume': d.capacity} 
-            for d in raw_data
+            {
+                'Date': d.date,
+                'Open': d.open,
+                'High': d.high,
+                'Low': d.low,
+                'Close': d.close,
+                'Volume': d.capacity
+            } for d in raw_data
         ])
+        
         df_final['Date'] = pd.to_datetime(df_final['Date'])
         df_final.set_index('Date', inplace=True)
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
         df_final = df_final.dropna()
 
-        # 最新數據與名稱
+        # 取得最新一筆資訊
         last_row = df_final.iloc[-1]
         o, h, l, c = last_row['Open'], last_row['High'], last_row['Low'], last_row['Close']
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
 
-        # 繪圖設定
+        # 4. 繪圖設定
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
@@ -78,27 +89,29 @@ def get_kline_url(sid):
                              mav=(5, 10), figsize=(12, 10), returnfig=True,
                              datetime_format='%m/%d', tight_layout=False)
         
-        # --- 2. 顯示加粗資訊文字並套用字體 ---
-        # 標題 (代碼 + 中文名稱)
+        # 5. 顯示頂部資訊 (加粗、置頂、中文支援)
+        # 標題 (y=0.96)
         fig.text(0.08, 0.96, f"{sid} {stock_name}", fontsize=28, weight='black', color='black', fontproperties=my_font)
         
-        # 數值資訊
+        # 數據 (y=0.92)
         info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
         fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', 
                  color='red' if c >= o else 'green', fontproperties=my_font)
 
-        # 留白設定，確保文字不擋到圖表
+        # 壓縮圖表騰出頂部空間
         plt.subplots_adjust(top=0.90)
 
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
 
+        # 6. 上傳
         upload_res = cloudinary.uploader.upload(tmp_path)
         return upload_res.get("secure_url")
 
     except Exception as e:
         return f"生成失敗: {str(e)}"
 
+# ========= LINE Bot 回應邏輯 =========
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature')
@@ -112,6 +125,7 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
+    
     if "日線" in msg:
         sid = msg.split(" ")[0]
         url = get_kline_url(sid)
