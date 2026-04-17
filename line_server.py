@@ -14,7 +14,7 @@ import cloudinary.uploader
 
 app = Flask(__name__)
 
-# ========= 核心設定 (與之前一致) =========
+# ========= 核心設定 =========
 LINE_ACCESS_TOKEN = "yl+8P+/NQEAvmculw5AgfS3cIQ51yV63NOeHujxxBFgZKWME6Xa0Vs/eBQw7M8/thAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxygFDmgyyrqYg7kaZoLsZP6q8PdJPIKnESlz2LDNI4aAdB04t89/1O/w1cDnyilFU="
 LINE_HANDLER_SECRET = "a479ce8e693bd35d0dd5541964945456" 
 
@@ -27,16 +27,10 @@ cloudinary.config(
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
-# ========= 建立名稱轉代碼的對照表 =========
-# twstock.codes 包含所有台股資訊
 def get_stock_id(name_or_id):
     name_or_id = name_or_id.upper().strip()
-    
-    # 如果已經是 4 位以上數字，直接回傳
     if re.match(r'^\d{4,6}$', name_or_id):
         return name_or_id
-    
-    # 否則在 twstock 代碼表中搜尋名稱
     for sid, info in twstock.codes.items():
         if info.name == name_or_id:
             return sid
@@ -51,7 +45,7 @@ def get_kline_url(sid):
         if not raw_data:
             return "交易所連線繁忙或代碼錯誤"
 
-        # 使用屬性提取法建立 DataFrame
+        # 建立 DataFrame
         df_final = pd.DataFrame([
             {'Date': d.date, 'Open': d.open, 'High': d.high, 'Low': d.low, 'Close': d.close, 'Volume': d.capacity} 
             for d in raw_data
@@ -65,17 +59,29 @@ def get_kline_url(sid):
 
         if df_final.empty: return "資料量不足"
 
+        # 抓取最新一筆資訊 (用於左上角文字)
+        last_row = df_final.iloc[-1]
+        o = last_row['Open']
+        h = last_row['High']
+        l = last_row['Low']
+        c = last_row['Close']
+        stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
+
+        # 繪圖風格
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
         tmp_path = "/tmp/k.png"
         fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
-                             mav=(5, 10), figsize=(10, 8), returnfig=True,
+                             mav=(5, 10), figsize=(12, 9), returnfig=True,
                              datetime_format='%m/%d', tight_layout=True)
         
-        last_price = float(df_final['Close'].iloc[-1])
-        stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
-        fig.text(0.05, 0.95, f"{sid} {stock_name}  Last: {last_price:.2f}", fontsize=20, weight='bold', color='red')
+        # --- 核心修改：左上角顯示完整資訊 ---
+        # 第一行：代碼 + 名稱
+        fig.text(0.08, 0.92, f"{sid} {stock_name}", fontsize=24, weight='bold', color='black')
+        # 第二行：開高低收資訊 (使用小一點的字體)
+        info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
+        fig.text(0.08, 0.88, info_text, fontsize=18, color='red' if c >= o else 'green')
 
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
@@ -99,8 +105,6 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
-    
-    # 處理按鈕回傳的「XXXX 日線」訊息
     if "日線" in msg:
         sid = msg.split(" ")[0]
         url = get_kline_url(sid)
@@ -110,16 +114,13 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text=f"⚠️ {url}"))
         return
 
-    # 處理使用者輸入 (名稱或代碼)
     sid = get_stock_id(msg)
     if sid:
         line_bot_api.reply_message(event.reply_token, create_kline_panel(sid))
     else:
-        # 沒找到代碼時的回應
-        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"抱歉，找不到「{msg}」相關的股票資訊。"))
+        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))
 
 def create_kline_panel(sid):
-    # 取得股票名稱
     name = twstock.codes[sid].name if sid in twstock.codes else "未知"
     return FlexSendMessage(
         alt_text=f"股票 {sid} {name}",
