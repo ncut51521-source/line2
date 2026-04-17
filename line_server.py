@@ -1,6 +1,6 @@
 import os, re, datetime
 import matplotlib
-matplotlib.use('Agg')  # 必備：確保在伺服器環境下繪圖不會出錯
+matplotlib.use('Agg') # 必備：伺服器環境繪圖不顯示視窗
 import matplotlib.pyplot as plt
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -18,7 +18,6 @@ app = Flask(__name__)
 LINE_ACCESS_TOKEN = "yl+8P+/NQEAvmculw5AgfS3cIQ51yV63NOeHujxxBFgZKWME6Xa0Vs/eBQw7M8/thAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxygFDmgyyrqYg7kaZoLsZP6q8PdJPIKnESlz2LDNI4aAdB04t89/1O/w1cDnyilFU="
 LINE_HANDLER_SECRET = "a479ce8e693bd35d0dd5541964945456" 
 
-# Cloudinary 配置 (使用你最後提供的 dzip2nboe 帳號)
 cloudinary.config( 
   cloud_name = "dzip2nboe", 
   api_key = "124438874888122", 
@@ -31,29 +30,34 @@ handler = WebhookHandler(LINE_HANDLER_SECRET)
 def get_kline_url(sid):
     try:
         plt.switch_backend('Agg')
-        
-        # --- 核心邏輯：使用 twstock 避開 Yahoo IP 封鎖 ---
         stock = twstock.Stock(sid)
-        raw_data = stock.fetch_31()  # 抓取最近 31 筆交易資料
+        raw_data = stock.fetch_31() 
         
-        if not raw_data or len(raw_data) < 5:
-            # 如果抓不到，嘗試更新代碼表後再抓一次
-            twstock.__update_codes()
-            raw_data = stock.fetch_31()
-            if not raw_data:
-                return "交易所目前連線繁忙，請稍後再試"
+        if not raw_data:
+            return "交易所連線繁忙或代碼錯誤，請稍後再試"
 
-        # 轉換成 DataFrame
-        df = pd.DataFrame(raw_data)
-        # twstock 欄位順序: Date, Capacity, Turnover, Open, High, Low, Close, Change, Transaction
-        df.columns = ['Date', 'Capacity', 'Turnover', 'Open', 'High', 'Low', 'Close', 'Change', 'Transaction']
-        df['Date'] = pd.to_datetime(df['Date'])
-        df.set_index('Date', inplace=True)
+        # --- 核心修正：使用屬性提取法建立 DataFrame，避免欄位數量不符錯誤 ---
+        df_final = pd.DataFrame([
+            {
+                'Date': d.date,
+                'Open': d.open,
+                'High': d.high,
+                'Low': d.low,
+                'Close': d.close,
+                'Volume': d.capacity
+            } for d in raw_data
+        ])
+        
+        df_final['Date'] = pd.to_datetime(df_final['Date'])
+        df_final.set_index('Date', inplace=True)
 
         # 確保數據類型為數值
-        for col in ['Open', 'High', 'Low', 'Close', 'Capacity']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna()
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
+        df_final = df_final.dropna()
+
+        if df_final.empty:
+            return "該股票目前無足夠交易資料"
 
         # 繪圖風格設定 (台股傳統：紅漲綠跌)
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
@@ -61,15 +65,14 @@ def get_kline_url(sid):
 
         tmp_path = "/tmp/k.png"
         # 畫最近 24 根 K 線 (約一個月交易日)
-        fig, axes = mpf.plot(df.tail(24), type='candle', style=s, volume=True, 
+        fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
                              mav=(5, 10), figsize=(10, 8), returnfig=True,
                              datetime_format='%m/%d', tight_layout=True)
         
-        last_price = float(df['Close'].iloc[-1])
-        fig.text(0.05, 0.95, f"STOCK: {sid}", fontsize=22, weight='bold')
-        fig.text(0.05, 0.90, f"Last Price: {last_price:.2f}", fontsize=18, color='red')
+        last_price = float(df_final['Close'].iloc[-1])
+        fig.text(0.05, 0.95, f"STOCK: {sid}  Last Price: {last_price:.2f}", 
+                 fontsize=20, weight='bold', color='red')
 
-        # 存檔並關閉，防止記憶體洩漏
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
 
@@ -93,10 +96,8 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
-    # 如果輸入的是四位數字代碼
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_kline_panel(msg))
-    # 如果點擊了按鈕觸發 "XXXX 日線"
     elif "日線" in msg:
         sid = msg.split(" ")[0]
         url = get_kline_url(sid)
@@ -110,7 +111,7 @@ def handle_message(event):
 
 def create_kline_panel(sid):
     return FlexSendMessage(
-        alt_text=f"股票 {sid} 查詢成功",
+        alt_text=f"股票 {sid} 選單",
         contents={
           "type": "bubble",
           "body": {
@@ -124,6 +125,5 @@ def create_kline_panel(sid):
     )
 
 if __name__ == "__main__":
-    # 支援 Render 伺服器
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
