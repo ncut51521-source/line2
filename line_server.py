@@ -2,6 +2,7 @@ import os, re, datetime
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
+from matplotlib import font_manager  # 載入字體管理工具
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -39,51 +40,54 @@ def get_stock_id(name_or_id):
 def get_kline_url(sid):
     try:
         plt.switch_backend('Agg')
+        
+        # --- 1. 設定中文字體 (務必確認檔名正確) ---
+        font_path = os.path.join(os.path.dirname(__file__), "NotoSansTC-Regular.otf")
+        if os.path.exists(font_path):
+            my_font = font_manager.FontProperties(fname=font_path)
+        else:
+            print("警告：找不到字體檔，中文可能顯示異常")
+            my_font = None
+
         stock = twstock.Stock(sid)
         raw_data = stock.fetch_31() 
-        
-        if not raw_data:
-            return "交易所連線繁忙或代碼錯誤"
+        if not raw_data: return "交易所連線繁忙"
 
-        # 建立 DataFrame
+        # 建立數據表
         df_final = pd.DataFrame([
             {'Date': d.date, 'Open': d.open, 'High': d.high, 'Low': d.low, 'Close': d.close, 'Volume': d.capacity} 
             for d in raw_data
         ])
-        
         df_final['Date'] = pd.to_datetime(df_final['Date'])
         df_final.set_index('Date', inplace=True)
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
         df_final = df_final.dropna()
 
-        if df_final.empty: return "資料量不足"
-
-        # 最新一筆資訊
+        # 最新數據與名稱
         last_row = df_final.iloc[-1]
         o, h, l, c = last_row['Open'], last_row['High'], last_row['Low'], last_row['Close']
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
 
-        # 繪圖風格
+        # 繪圖設定
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
         tmp_path = "/tmp/k.png"
-        
-        # 增加頂部留白 (使用圖表比例設定)
         fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
                              mav=(5, 10), figsize=(12, 10), returnfig=True,
                              datetime_format='%m/%d', tight_layout=False)
         
-        # --- 視覺優化：調整文字位置與粗細 ---
-        # 第一行：代碼名稱 (y=0.96)
-        fig.text(0.08, 0.96, f"{sid} {stock_name}", fontsize=28, weight='black', color='black')
+        # --- 2. 顯示加粗資訊文字並套用字體 ---
+        # 標題 (代碼 + 中文名稱)
+        fig.text(0.08, 0.96, f"{sid} {stock_name}", fontsize=28, weight='black', color='black', fontproperties=my_font)
         
-        # 第二行：開高低收 (y=0.92)
+        # 數值資訊
         info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
-        fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', color='red' if c >= o else 'green')
+        fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', 
+                 color='red' if c >= o else 'green', fontproperties=my_font)
 
-        # 調整邊距防止文字被切到
+        # 留白設定，確保文字不擋到圖表
         plt.subplots_adjust(top=0.90)
 
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
