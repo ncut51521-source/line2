@@ -8,21 +8,20 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, ImageSendMessage, FlexSendMessage
 import pandas as pd
 import mplfinance as mpf
-import yfinance as yf
 import twstock
 import cloudinary
 import cloudinary.uploader
 
 app = Flask(__name__)
 
-# ========= 核心設定區 =========
-LINE_ACCESS_TOKEN = "zGojeXY7W+OOc+H+hpbohy6c2ZVw352Tr7V4iWm7luvYkFOqOZhjdqA4aVAU6X3fhAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxCW6mOW2S1k/2wuiLsE4u1UwhNQPKKRfXExBz0i/T5rAdB04t89/1O/w1cDnyilFU="
-LINE_HANDLER_SECRET = "f3187d1658e4e7f172cd19fddda08a36" 
+# ========= 核心設定 (請確認與你 Render 設定一致) =========
+LINE_ACCESS_TOKEN = "yl+8P+/NQEAvmculw5AgfS3cIQ51yV63NOeHujxxBFgZKWME6Xa0Vs/eBQw7M8/thAsy8C1Bhr0r8uuFEP312UlZI5JP2GrqeFGIb70r3ZxygFDmgyyrqYg7kaZoLsZP6q8PdJPIKnESlz2LDNI4aAdB04t89/1O/w1cDnyilFU="
+LINE_HANDLER_SECRET = "a479ce8e693bd35d0dd5541964945456" 
 
 cloudinary.config( 
-  cloud_name = "dihp3v6st", 
-  api_key = "634351368739198", 
-  api_secret = "RAn_VByw_qfT5O6Kx-S-zZ623rY" 
+  cloud_name = "dzip2nboe", 
+  api_key = "124438874888122", 
+  api_secret = "X71kcLFVNKX-XYjKHCbCnMFAzCw" 
 )
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
@@ -31,48 +30,32 @@ handler = WebhookHandler(LINE_HANDLER_SECRET)
 def get_kline_url(sid):
     try:
         plt.switch_backend('Agg')
-        df = pd.DataFrame()
+        
+        # --- 核心改變：使用 twstock 直接抓取台灣交易所數據 (避開 Yahoo 封鎖) ---
+        stock = twstock.Stock(sid)
+        raw_data = stock.fetch_31() # 抓取最近 31 筆
+        
+        if not raw_data:
+            return "交易所連線繁忙或代碼錯誤，請稍後再試"
 
-        # --- 策略 A: 先試 twstock (對台股最穩定) ---
-        try:
-            stock = twstock.Stock(sid)
-            # 抓取最近 31 筆資料
-            raw_data = stock.fetch_31()
-            if raw_data:
-                df = pd.DataFrame(raw_data)
-                # twstock 欄位轉換
-                df.columns = ['Date', 'Capacity', 'Turnover', 'Open', 'High', 'Low', 'Close', 'Change', 'Transaction']
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-        except Exception as e:
-            print(f"twstock error: {e}")
+        # 轉換成 pandas DataFrame
+        df = pd.DataFrame(raw_data)
+        # twstock 原始欄位順序: Date, Capacity, Turnover, Open, High, Low, Close, Change, Transaction
+        df.columns = ['Date', 'Capacity', 'Turnover', 'Open', 'High', 'Low', 'Close', 'Change', 'Transaction']
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
 
-        # --- 策略 B: 如果 twstock 失敗，才試 yfinance (並處理 MultiIndex) ---
-        if df.empty:
-            df = yf.download(f"{sid}.TW", period="1mo", interval="1d", progress=False, auto_adjust=True)
-            if df.empty:
-                df = yf.download(f"{sid}.TWO", period="1mo", interval="1d", progress=False, auto_adjust=True)
-            
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-
-        # 檢查最終資料
-        if df.empty:
-            return "交易所連線繁忙，請稍後再試 (IP Blocked)"
-
-        # 數據清洗
-        df = df.dropna()
-        for col in ["Open", "High", "Low", "Close"]:
+        # 確保數據類型正確
+        for col in ['Open', 'High', 'Low', 'Close', 'Capacity']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         df = df.dropna()
 
-        # 繪圖設定 (台股傳統：紅漲綠跌)
+        # 繪圖設定
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
         tmp_path = "/tmp/k.png"
-        # 畫最近 24 根 K 線 (約一個月交易日)
+        # 畫最近 24 根 K 線
         fig, axes = mpf.plot(df.tail(24), type='candle', style=s, volume=True, 
                              mav=(5, 10), figsize=(10, 8), returnfig=True,
                              datetime_format='%m/%d', tight_layout=True)
@@ -84,7 +67,7 @@ def get_kline_url(sid):
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
 
-        # 上傳圖床
+        # 上傳到 Cloudinary
         upload_res = cloudinary.uploader.upload(tmp_path)
         return upload_res.get("secure_url")
 
@@ -133,6 +116,5 @@ def create_kline_panel(sid):
     )
 
 if __name__ == "__main__":
-    # Render 會自動給予 PORT 環境變數
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
