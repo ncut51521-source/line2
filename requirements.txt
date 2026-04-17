@@ -1,11 +1,7 @@
 flask
 line-bot-sdk
-requests
 pandas
-matplotlib
 mplfinance
-gunicorn
-urllib3
-yfinance
+twstock
 cloudinary
-mplfinance
+matplotlib
