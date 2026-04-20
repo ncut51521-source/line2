@@ -39,68 +39,71 @@ def get_stock_id(name_or_id):
     return None
 
 # ========= 核心 K 線圖生成函式 =========
-def get_kline_url(sid):
+def get_kline_url(sid, period='D'):
     try:
         plt.switch_backend('Agg')
         
-        # 1. 精確指定字體路徑 (請確保檔案在 GitHub 根目錄)
+        # 1. 字體設定
         font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJKtc-Regular.otf")
-        if os.path.exists(font_path):
-            my_font = font_manager.FontProperties(fname=font_path)
-        else:
-            print(f"找不到字體檔: {font_path}")
-            my_font = None
+        my_font = font_manager.FontProperties(fname=font_path) if os.path.exists(font_path) else None
 
-        # 2. 抓取資料 (優先使用 twstock)
+        # 2. 抓取資料 (週/月線需抓更長區間進行重採樣)
         stock = twstock.Stock(sid)
-        raw_data = stock.fetch_31() 
+        if period == 'D':
+            raw_data = stock.fetch_31()
+            title_tag = "日線"
+        else:
+            # 抓取自 2024 年起的資料以確保轉換準確度
+            raw_data = stock.fetch(2024, 1) 
+            title_tag = "週線" if period == 'W' else "月線"
+
         if not raw_data:
-            return "交易所連線繁忙，請稍後再試"
+            return "交易所連線繁忙或查無資料"
 
-        # 3. 建立 DataFrame (屬性提取法，避開欄位長度錯誤)
-        df_final = pd.DataFrame([
-            {
-                'Date': d.date,
-                'Open': d.open,
-                'High': d.high,
-                'Low': d.low,
-                'Close': d.close,
-                'Volume': d.capacity
-            } for d in raw_data
-        ])
+        # 3. 建立 DataFrame
+        df = pd.DataFrame([{
+            'Date': d.date, 'Open': d.open, 'High': d.high, 
+            'Low': d.low, 'Close': d.close, 'Volume': d.capacity
+        } for d in raw_data])
         
-        df_final['Date'] = pd.to_datetime(df_final['Date'])
-        df_final.set_index('Date', inplace=True)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            df_final[col] = pd.to_numeric(df_final[col], errors='coerce')
-        df_final = df_final.dropna()
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = df.dropna()
 
-        # 取得最新一筆資訊
-        last_row = df_final.iloc[-1]
+        # 4. 週期轉換邏輯 (Resampling)
+        if period == 'W':
+            df = df.resample('W').agg({
+                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+            }).dropna()
+        elif period == 'M':
+            df = df.resample('M').agg({
+                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+            }).dropna()
+
+        # 取最後 24 根 K 棒
+        plot_df = df.tail(24)
+        last_row = plot_df.iloc[-1]
         o, h, l, c = last_row['Open'], last_row['High'], last_row['Low'], last_row['Close']
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
 
-        # 4. 繪圖設定
+        # 5. 繪圖設定
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
 
         tmp_path = "/tmp/k.png"
-        fig, axes = mpf.plot(df_final.tail(24), type='candle', style=s, volume=True, 
+        fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, 
                              mav=(5, 10), figsize=(12, 10), returnfig=True,
                              datetime_format='%m/%d', tight_layout=False)
         
-        # 5. 顯示頂部資訊 (加粗、置頂、中文支援)
-        # 標題 (y=0.96)
-        fig.text(0.08, 0.96, f"{sid} {stock_name}", fontsize=28, weight='black', color='black', fontproperties=my_font)
-        
-        # 數據 (y=0.92)
+        # 顯示標題與數據
+        fig.text(0.08, 0.96, f"{sid} {stock_name} ({title_tag})", fontsize=28, weight='black', fontproperties=my_font)
         info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
         fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', 
                  color='red' if c >= o else 'green', fontproperties=my_font)
 
-        # 壓縮圖表騰出頂部空間
         plt.subplots_adjust(top=0.90)
-
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
         plt.close(fig)
 
@@ -126,15 +129,22 @@ def callback():
 def handle_message(event):
     msg = event.message.text.strip()
     
-    if "日線" in msg:
-        sid = msg.split(" ")[0]
-        url = get_kline_url(sid)
+    # 處理 K 線指令
+    if any(k in msg for k in ["日線", "週線", "月線"]):
+        parts = msg.split(" ")
+        sid = parts[0]
+        mode = 'D'
+        if "週線" in msg: mode = 'W'
+        elif "月線" in msg: mode = 'M'
+        
+        url = get_kline_url(sid, period=mode)
         if url and url.startswith("http"):
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
             line_bot_api.reply_message(event.reply_token, TextMessage(text=f"⚠️ {url}"))
         return
 
+    # 處理普通查詢 (顯示面板)
     sid = get_stock_id(msg)
     if sid:
         line_bot_api.reply_message(event.reply_token, create_kline_panel(sid))
@@ -148,10 +158,19 @@ def create_kline_panel(sid):
         contents={
           "type": "bubble",
           "body": {
-            "type": "box", "layout": "vertical", "contents": [
-              {"type": "text", "text": f"📈 {sid} {name}", "weight": "bold", "size": "xl"},
-              {"type": "button", "style": "primary", "margin": "md", "color": "#007bff", 
-               "action": {"type": "message", "label": "查看日 K 線圖", "text": f"{sid} 日線"}}
+            "type": "box", "layout": "vertical", "spacing": "md", "contents": [
+              {"type": "text", "text": f"📈 {sid} {name}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "separator", "margin": "sm"},
+              {
+                "type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                  {"type": "button", "style": "primary", "color": "#007bff", 
+                   "action": {"type": "message", "label": "查看日 K 線", "text": f"{sid} 日線"}},
+                  {"type": "button", "style": "primary", "color": "#28a745", 
+                   "action": {"type": "message", "label": "查看週 K 線", "text": f"{sid} 週線"}},
+                  {"type": "button", "style": "primary", "color": "#fd7e14", 
+                   "action": {"type": "message", "label": "查看月 K 線", "text": f"{sid} 月線"}}
+                ]
+              }
             ]
           }
         }
