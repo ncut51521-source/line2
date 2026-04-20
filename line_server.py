@@ -47,12 +47,20 @@ def get_kline_url(sid, period='D'):
 
         # 1. 抓取 K 線歷史資料
         stock = twstock.Stock(sid)
+        
+        # 1. 根據週期決定「抓取長度」與「顯示根數 (tail)」
         if period == 'D':
-            raw_data = stock.fetch_31()
+            raw_data = stock.fetch_31()  # 抓一個月
+            show_n = 24                  # 顯示約 1 個月
             title_tag = "日線"
+        elif period == 'W':
+            raw_data = stock.fetch(2025, 1) # 抓一年多絕對夠 3 個月
+            show_n = 12                     # 顯示最後 12 根週 K (約 3 個月)
+            title_tag = "週線"
         else:
-            raw_data = stock.fetch(2024, 1) 
-            title_tag = "週線" if period == 'W' else "月線"
+            raw_data = stock.fetch(2024, 1)
+            show_n = 12                     # 顯示最後 12 根月 K (1 年)
+            title_tag = "月線"
 
         if not raw_data: return "查無資料"
 
@@ -62,27 +70,32 @@ def get_kline_url(sid, period='D'):
         rt_color = "black"
         if rt_data['success'] and rt_data['realtime']['latest_trade_price'] != '-':
             curr = float(rt_data['realtime']['latest_trade_price'])
-            prev = float(rt_data['realtime']['open']) # 以開盤價計算當日漲跌幅
+            prev = float(rt_data['realtime']['open']) 
             diff = curr - prev
             diff_pct = (diff / prev) * 100
             rt_color = "red" if diff > 0 else ("green" if diff < 0 else "black")
-            rt_price_text = f"目前價格: {curr} ({'+' if diff > 0 else ''}{diff:.2f}, {diff_pct:.2f}%)"
+            rt_price_text = f"最新價: {curr} ({'+' if diff > 0 else ''}{diff:.2f}, {diff_pct:.2f}%)"
 
         # 3. 資料處理與週期轉換
         df = pd.DataFrame([{'Date': d.date, 'Open': d.open, 'High': d.high, 'Low': d.low, 'Close': d.close, 'Volume': d.capacity} for d in raw_data])
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
+        
         if period == 'W':
             df = df.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         elif period == 'M':
             df = df.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
         # 4. 繪圖
-        plot_df = df.tail(24)
+        plot_df = df.tail(show_n)
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
+        
         tmp_path = "/tmp/k.png"
-        fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, mav=(5, 10), figsize=(12, 10), returnfig=True, datetime_format='%m/%d', tight_layout=False)
+        # 注意：如果是週/月線，datetime_format 建議改為 %y/%m/%d 比較清楚
+        fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, mav=(5, 10), 
+                             figsize=(12, 10), returnfig=True, 
+                             datetime_format='%y/%m/%d', tight_layout=False)
         
         # 5. 在圖片頂部繪製文字
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
