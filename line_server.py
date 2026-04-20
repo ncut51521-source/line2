@@ -45,6 +45,7 @@ def get_kline_url(sid, period='D'):
         font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJKtc-Regular.otf")
         my_font = font_manager.FontProperties(fname=font_path) if os.path.exists(font_path) else None
 
+        # 1. 抓取 K 線歷史資料
         stock = twstock.Stock(sid)
         if period == 'D':
             raw_data = stock.fetch_31()
@@ -53,46 +54,42 @@ def get_kline_url(sid, period='D'):
             raw_data = stock.fetch(2024, 1) 
             title_tag = "週線" if period == 'W' else "月線"
 
-        if not raw_data:
-            return "交易所連線繁忙或查無資料"
+        if not raw_data: return "查無資料"
 
-        df = pd.DataFrame([{
-            'Date': d.date, 'Open': d.open, 'High': d.high, 
-            'Low': d.low, 'Close': d.close, 'Volume': d.capacity
-        } for d in raw_data])
-        
+        # 2. 抓取「即時」價格資訊 (顯示於圖片頂部)
+        rt_data = twstock.realtime.get(sid)
+        rt_price_text = ""
+        rt_color = "black"
+        if rt_data['success'] and rt_data['realtime']['latest_trade_price'] != '-':
+            curr = float(rt_data['realtime']['latest_trade_price'])
+            prev = float(rt_data['realtime']['open']) # 以開盤價計算當日漲跌幅
+            diff = curr - prev
+            diff_pct = (diff / prev) * 100
+            rt_color = "red" if diff > 0 else ("green" if diff < 0 else "black")
+            rt_price_text = f"目前價格: {curr} ({'+' if diff > 0 else ''}{diff:.2f}, {diff_pct:.2f}%)"
+
+        # 3. 資料處理與週期轉換
+        df = pd.DataFrame([{'Date': d.date, 'Open': d.open, 'High': d.high, 'Low': d.low, 'Close': d.close, 'Volume': d.capacity} for d in raw_data])
         df['Date'] = pd.to_datetime(df['Date'])
         df.set_index('Date', inplace=True)
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna()
-
         if period == 'W':
-            df = df.resample('W').agg({
-                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-            }).dropna()
+            df = df.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         elif period == 'M':
-            df = df.resample('M').agg({
-                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-            }).dropna()
+            df = df.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
+        # 4. 繪圖
         plot_df = df.tail(24)
-        last_row = plot_df.iloc[-1]
-        o, h, l, c = last_row['Open'], last_row['High'], last_row['Low'], last_row['Close']
-        stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
-
         mc = mpf.make_marketcolors(up='red', down='green', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
-
         tmp_path = "/tmp/k.png"
-        fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, 
-                             mav=(5, 10), figsize=(12, 10), returnfig=True,
-                             datetime_format='%m/%d', tight_layout=False)
+        fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, mav=(5, 10), figsize=(12, 10), returnfig=True, datetime_format='%m/%d', tight_layout=False)
         
+        # 5. 在圖片頂部繪製文字
+        stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
+        # 標題
         fig.text(0.08, 0.96, f"{sid} {stock_name} ({title_tag})", fontsize=28, weight='black', fontproperties=my_font)
-        info_text = f"O: {o:.2f}  H: {h:.2f}  L: {l:.2f}  C: {c:.2f}"
-        fig.text(0.08, 0.92, info_text, fontsize=22, weight='black', 
-                 color='red' if c >= o else 'green', fontproperties=my_font)
+        # 即時股價與漲跌 (加在這裡！)
+        fig.text(0.08, 0.92, rt_price_text, fontsize=24, weight='bold', color=rt_color, fontproperties=my_font)
 
         plt.subplots_adjust(top=0.90)
         fig.savefig(tmp_path, dpi=100, bbox_inches='tight')
@@ -121,10 +118,7 @@ def handle_message(event):
     if any(k in msg for k in ["日線", "週線", "月線"]):
         parts = msg.split(" ")
         sid = parts[0]
-        mode = 'D'
-        if "週線" in msg: mode = 'W'
-        elif "月線" in msg: mode = 'M'
-        
+        mode = 'W' if "週線" in msg else ('M' if "月線" in msg else 'D')
         url = get_kline_url(sid, period=mode)
         if url and url.startswith("http"):
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
@@ -139,48 +133,18 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))
 
 def create_kline_panel(sid):
-    try:
-        # 抓取即時行情
-        realtime = twstock.realtime.get(sid)
-        if realtime['success']:
-            price = float(realtime['realtime']['latest_trade_price'])
-            open_price = float(realtime['realtime']['open'])
-            diff = price - open_price
-            diff_pct = (diff / open_price) * 100
-            color = "#FF0000" if diff >= 0 else "#008000"
-            status_text = f"{price} ({'+' if diff > 0 else ''}{diff:.2f}, {diff_pct:.2f}%)"
-        else:
-            status_text = "暫無即時行情"
-            color = "#000000"
-    except:
-        status_text = "數據取得錯誤"
-        color = "#000000"
-
     name = twstock.codes[sid].name if sid in twstock.codes else "未知"
-    
     return FlexSendMessage(
         alt_text=f"股票 {sid} {name}",
         contents={
           "type": "bubble",
           "body": {
             "type": "box", "layout": "vertical", "spacing": "md", "contents": [
-              {
-                "type": "box", "layout": "horizontal", "contents": [
-                  {"type": "text", "text": f"📈 {sid} {name}", "weight": "bold", "size": "xl", "flex": 1},
-                  {"type": "text", "text": status_text, "color": color, "align": "end", "weight": "bold", "gravity": "center"}
-                ]
-              },
-              {"type": "separator", "margin": "sm"},
-              {
-                "type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                  {"type": "button", "style": "primary", "color": "#007bff", 
-                   "action": {"type": "message", "label": "查看日 K 線", "text": f"{sid} 日線"}},
-                  {"type": "button", "style": "primary", "color": "#28a745", 
-                   "action": {"type": "message", "label": "查看週 K 線", "text": f"{sid} 週線"}},
-                  {"type": "button", "style": "primary", "color": "#fd7e14", 
-                   "action": {"type": "message", "label": "查看月 K 線", "text": f"{sid} 月線"}}
-                ]
-              }
+              {"type": "text", "text": f"📈 {sid} {name}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "separator"},
+              {"type": "button", "style": "primary", "color": "#007bff", "action": {"type": "message", "label": "查看日 K 線", "text": f"{sid} 日線"}},
+              {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "查看週 K 線", "text": f"{sid} 週線"}},
+              {"type": "button", "style": "primary", "color": "#fd7e14", "action": {"type": "message", "label": "查看月 K 線", "text": f"{sid} 月線"}}
             ]
           }
         }
