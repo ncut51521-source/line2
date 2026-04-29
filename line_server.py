@@ -16,6 +16,7 @@ import cloudinary.uploader
 app = Flask(__name__)
 
 # ========= 核心設定 (LINE & Cloudinary) =========
+# 請確保這些金鑰是正確且有效的
 LINE_ACCESS_TOKEN = "dX9zPn4sFpqbNCL+4SBGEsSGtMcSeYVZ1GEv5MNGOeISygMC896e141rVqOkETcEkRNktPujTjRf4Cn1FyoU2+S8sPPhSEj1LhTKRwLI5HQyaj09mE1ozJlM+6GKeC6JCAVaFyJxuTE3fanlzC82FQdB04t89/1O/w1cDnyilFU="
 LINE_HANDLER_SECRET = "255e4550a9999d33b4d2cccd8c8c8af8" 
 
@@ -42,29 +43,30 @@ def get_stock_id(name_or_id):
 def get_kline_url(sid, period='D'):
     try:
         plt.switch_backend('Agg')
+        # 如果在 Render 上運行，請確保 NotoSansCJKtc-Regular.otf 檔案也在根目錄
         font_path = os.path.join(os.path.dirname(__file__), "NotoSansCJKtc-Regular.otf")
         my_font = font_manager.FontProperties(fname=font_path) if os.path.exists(font_path) else None
 
         # 1. 抓取 K 線歷史資料
         stock = twstock.Stock(sid)
         
-        # 1. 根據週期決定「抓取長度」與「顯示根數 (tail)」
+        # 根據週期決定「抓取長度」與「顯示根數 (tail)」
         if period == 'D':
             raw_data = stock.fetch_31()  # 抓一個月
             show_n = 24                  # 顯示約 1 個月
             title_tag = "日線"
         elif period == 'W':
-            raw_data = stock.fetch(2025, 1) # 抓一年多絕對夠 3 個月
-            show_n = 12                     # 顯示最後 12 根週 K (約 3 個月)
+            raw_data = stock.fetch(2025, 1) # 抓較長區間以計算週 K
+            show_n = 12                     # 顯示最後 12 根週 K
             title_tag = "週線"
         else:
             raw_data = stock.fetch(2024, 1)
-            show_n = 12                     # 顯示最後 12 根月 K (1 年)
+            show_n = 12                     # 顯示最後 12 根月 K
             title_tag = "月線"
 
         if not raw_data: return "查無資料"
 
-        # 2. 抓取「即時」價格資訊 (顯示於圖片頂部)
+        # 2. 抓取「即時」價格資訊
         rt_data = twstock.realtime.get(sid)
         rt_price_text = ""
         rt_color = "black"
@@ -92,16 +94,13 @@ def get_kline_url(sid, period='D'):
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', y_on_right=True)
         
         tmp_path = "/tmp/k.png"
-        # 注意：如果是週/月線，datetime_format 建議改為 %y/%m/%d 比較清楚
         fig, axes = mpf.plot(plot_df, type='candle', style=s, volume=True, mav=(5, 10), 
                              figsize=(12, 10), returnfig=True, 
                              datetime_format='%y/%m/%d', tight_layout=False)
         
         # 5. 在圖片頂部繪製文字
         stock_name = twstock.codes[sid].name if sid in twstock.codes else ""
-        # 標題
         fig.text(0.08, 0.96, f"{sid} {stock_name} ({title_tag})", fontsize=28, weight='black', fontproperties=my_font)
-        # 即時股價與漲跌 (加在這裡！)
         fig.text(0.08, 0.92, rt_price_text, fontsize=24, weight='bold', color=rt_color, fontproperties=my_font)
 
         plt.subplots_adjust(top=0.90)
@@ -128,6 +127,7 @@ def callback():
 def handle_message(event):
     msg = event.message.text.strip()
     
+    # 處理 K 線圖請求 (如: 2330 日線)
     if any(k in msg for k in ["日線", "週線", "月線"]):
         parts = msg.split(" ")
         sid = parts[0]
@@ -139,10 +139,11 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextMessage(text=f"⚠️ {url}"))
         return
 
+    # 處理股票代碼查詢，彈出 Flex Message 按鈕
     sid = get_stock_id(msg)
     if sid:
         line_bot_api.reply_message(event.reply_token, create_kline_panel(sid))
-    else:jo4
+    else:
         line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))
 
 def create_kline_panel(sid):
@@ -164,5 +165,6 @@ def create_kline_panel(sid):
     )
 
 if __name__ == "__main__":
+    # Render 環境會自動提供 PORT 變數
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
