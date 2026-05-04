@@ -1,8 +1,4 @@
 flask
 line-bot-sdk
-pandas
-mplfinance
 twstock
-cloudinary
-matplotlib
 gunicorn
