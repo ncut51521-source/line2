@@ -44,29 +44,31 @@ def get_stock_info_text(sid, info_type):
             ma5 = stock.moving_average(stock.price, 5)
             return f"📈 {sid} 技術指標\n現價: {stock.price[-1]}\n5日均價: {ma5[-1]:.2f}"
             
-        elif info_type == "三大法人":
-            # 抓取證交所三大法人個股買賣報表 (以最近交易日為例)
-            # 注意：此 API 僅提供盤後數據，盤中查詢會顯示前一交易日
+	elif info_type == "三大法人":
+            # 加入 verify=False 跳過 SSL 驗證
             url = f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}"
-            res = requests.get(url)
-            data = res.json()
-            
-            if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
-                # 取得最新一筆數據 (通常是最近一個交易日)
-                row = data['data'][0] 
-                date_str = row[0]       # 日期
-                foreign = row[4]        # 外資買賣超
-                trust = row[10]         # 投信買賣超
-                dealer = row[11]        # 自營商買賣超
+            try:
+                # 加上 verify=False
+                res = requests.get(url, verify=False, timeout=10)
+                data = res.json()
                 
-                return (f"🏦 {sid} 三大法人買賣超\n"
-                        f"📅 日期：{date_str}\n"
-                        f"------------------\n"
-                        f"👤 外資：{foreign} 股\n"
-                        f"💪 投信：{trust} 股\n"
-                        f"🏢 自營：{dealer} 股\n"
-                        f"⚠️ 單位為「股」，正數為買超。")
-            return f"查無 {sid} 的法人資料 (可能非交易日或代碼錯誤)"
+                if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
+                    row = data['data'][0] 
+                    date_str = row[0]       
+                    foreign = row[4]        
+                    trust = row[10]         
+                    dealer = row[11]        
+                    
+                    return (f"🏦 {sid} 三大法人買賣超\n"
+                            f"📅 日期：{date_str}\n"
+                            f"------------------\n"
+                            f"👤 外資：{foreign} 股\n"
+                            f"💪 投信：{trust} 股\n"
+                            f"🏢 自營：{dealer} 股\n"
+                            f"⚠️ 單位為「股」，正數為買超。")
+                return f"查無 {sid} 的法人資料 (可能非交易日或代碼錯誤)"
+            except Exception as req_e:
+                return f"連線證交所失敗: {str(req_e)}"
             
         elif info_type == "公司介紹":
             if sid in twstock.codes:
