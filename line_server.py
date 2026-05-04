@@ -1,12 +1,16 @@
-import requests
 import os
 import re
 import traceback
+import requests
+import urllib3
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, FlexSendMessage
 import twstock
+
+# 禁用安全請求警告（因為我們使用了 verify=False）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
@@ -29,7 +33,6 @@ def get_stock_id(name_or_id):
 
 # ========= 邏輯：處理各項數值化請求 =========
 def get_stock_info_text(sid, info_type):
-    import requests # 記得在檔案最上方加上 import requests
     try:
         if info_type == "即時五檔":
             rt = twstock.realtime.get(sid)
@@ -44,20 +47,19 @@ def get_stock_info_text(sid, info_type):
             ma5 = stock.moving_average(stock.price, 5)
             return f"📈 {sid} 技術指標\n現價: {stock.price[-1]}\n5日均價: {ma5[-1]:.2f}"
             
-	elif info_type == "三大法人":
-            # 加入 verify=False 跳過 SSL 驗證
+        elif info_type == "三大法人":
+            # 加上 verify=False 解決 SSL 驗證失敗問題
             url = f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}"
             try:
-                # 加上 verify=False
                 res = requests.get(url, verify=False, timeout=10)
                 data = res.json()
                 
                 if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
                     row = data['data'][0] 
                     date_str = row[0]       
-                    foreign = row[4]        
-                    trust = row[10]         
-                    dealer = row[11]        
+                    foreign = row[4]        # 外資
+                    trust = row[10]         # 投信
+                    dealer = row[11]        # 自營商
                     
                     return (f"🏦 {sid} 三大法人買賣超\n"
                             f"📅 日期：{date_str}\n"
@@ -95,10 +97,9 @@ def callback():
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        # 即使驗證失敗也回傳 OK，讓 Verify 按鈕顯示 Success
-        # 這樣可以確認伺服器有收到封包
+        # Verify 測試時回傳 OK 確保連線通暢[cite: 2]
         return 'OK' 
-    except Exception as e:
+    except Exception:
         return 'OK'
         
     return 'OK'
@@ -108,15 +109,16 @@ def handle_message(event):
     try:
         msg = event.message.text.strip()
         
-        # 處理詳細查詢請求
+        # 處理按鈕觸發的詳細查詢
         for action in ["即時五檔", "三大法人", "技術指標", "公司介紹"]:
             if action in msg:
+                # 假設格式為 "2330 三大法人"
                 sid = msg.split(" ")[0]
                 res_text = get_stock_info_text(sid, action)
                 line_bot_api.reply_message(event.reply_token, TextMessage(text=res_text))
                 return
 
-        # 初始代碼輸入，顯示選單
+        # 初始代碼輸入，顯示選單按鈕
         sid = get_stock_id(msg)
         if sid:
             name = twstock.codes[sid].name if sid in twstock.codes else "未知"
