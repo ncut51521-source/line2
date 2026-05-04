@@ -1,8 +1,11 @@
-import os, re, datetime, traceback
+import os
+import re
+import traceback
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, FlexSendMessage
+import twstock  # 統一放在最上方，確保所有函式都能讀取[cite: 2]
 
 app = Flask(__name__)
 
@@ -15,7 +18,6 @@ handler = WebhookHandler(LINE_HANDLER_SECRET)
 
 # ========= 邏輯：獲取股票 ID =========
 def get_stock_id(name_or_id):
-    import twstock[cite: 2]
     name_or_id = name_or_id.upper().strip()[cite: 2]
     if re.match(r'^\d{4,6}$', name_or_id):[cite: 2]
         return name_or_id[cite: 2]
@@ -26,7 +28,6 @@ def get_stock_id(name_or_id):
 
 # ========= 邏輯：處理各項數值化請求 =========
 def get_stock_info_text(sid, info_type):
-    import twstock[cite: 2]
     try:
         if info_type == "即時五檔":
             rt = twstock.realtime.get(sid)[cite: 2]
@@ -45,16 +46,17 @@ def get_stock_info_text(sid, info_type):
             return f"🏦 {sid} 三大法人買賣超\n(提示：本功能需介接三大法人 API，目前為示範位置)"
             
         elif info_type == "公司介紹":
-            info = twstock.codes[sid][cite: 2]
-            # 組合更詳細的公司資訊
-            res = [
-                f"🏢 公司名稱：{info.name} ({sid})",
-                f"💰 額定股本：(查閱財報中)",
-                f"🏆 產業地位：該領域領先企業",
-                f"📂 產業：{info.group}",
-                f"🔍 細產業：{info.type}相關設備與服務"
-            ]
-            return "\n".join(res)
+            if sid in twstock.codes:[cite: 2]
+                info = twstock.codes[sid][cite: 2]
+                res = [
+                    f"🏢 公司名稱：{info.name} ({sid})",
+                    f"💰 額定股本：(查閱財報中)",
+                    f"🏆 產業地位：該領域領先企業",
+                    f"📂 產業：{info.group}",
+                    f"🔍 細產業：{info.type}相關設備"
+                ]
+                return "\n".join(res)
+            return f"查無 {sid} 的公司介紹"
             
     except Exception as e:
         return f"獲取{info_type}失敗: {str(e)}"
@@ -86,13 +88,12 @@ def handle_message(event):
         # 初始代碼輸入，顯示選單
         sid = get_stock_id(msg)[cite: 2]
         if sid:
-            import twstock[cite: 2]
             name = twstock.codes[sid].name if sid in twstock.codes else "未知"[cite: 2]
             line_bot_api.reply_message(event.reply_token, create_stock_menu(sid, name))
         else:
             line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))[cite: 2]
     except Exception as e:
-        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"發生錯誤: {str(e)}"))[cite: 2]
+        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"系統錯誤: {str(e)}"))[cite: 2]
 
 def create_stock_menu(sid, name):
     return FlexSendMessage(
