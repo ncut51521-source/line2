@@ -5,7 +5,7 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, FlexSendMessage
-import twstock  # 統一放在最上方，確保所有函式都能讀取[cite: 2]
+import twstock
 
 app = Flask(__name__)
 
@@ -18,19 +18,19 @@ handler = WebhookHandler(LINE_HANDLER_SECRET)
 
 # ========= 邏輯：獲取股票 ID =========
 def get_stock_id(name_or_id):
-    name_or_id = name_or_id.upper().strip()[cite: 2]
-    if re.match(r'^\d{4,6}$', name_or_id):[cite: 2]
-        return name_or_id[cite: 2]
-    for sid, info in twstock.codes.items():[cite: 2]
-        if info.name == name_or_id:[cite: 2]
-            return sid[cite: 2]
-    return None[cite: 2]
+    name_or_id = name_or_id.upper().strip()
+    if re.match(r'^\d{4,6}$', name_or_id):
+        return name_or_id
+    for sid, info in twstock.codes.items():
+        if info.name == name_or_id:
+            return sid
+    return None
 
 # ========= 邏輯：處理各項數值化請求 =========
 def get_stock_info_text(sid, info_type):
     try:
         if info_type == "即時五檔":
-            rt = twstock.realtime.get(sid)[cite: 2]
+            rt = twstock.realtime.get(sid)
             if rt['success']:
                 bids = rt['realtime']['best_bid_price']
                 asks = rt['realtime']['best_ask_price']
@@ -38,7 +38,7 @@ def get_stock_info_text(sid, info_type):
             return "暫時無法取得五檔數據"
             
         elif info_type == "技術指標":
-            stock = twstock.Stock(sid)[cite: 2]
+            stock = twstock.Stock(sid)
             ma5 = stock.moving_average(stock.price, 5)
             return f"📈 {sid} 技術指標\n現價: {stock.price[-1]}\n5日均價: {ma5[-1]:.2f}"
             
@@ -46,8 +46,8 @@ def get_stock_info_text(sid, info_type):
             return f"🏦 {sid} 三大法人買賣超\n(提示：本功能需介接三大法人 API，目前為示範位置)"
             
         elif info_type == "公司介紹":
-            if sid in twstock.codes:[cite: 2]
-                info = twstock.codes[sid][cite: 2]
+            if sid in twstock.codes:
+                info = twstock.codes[sid]
                 res = [
                     f"🏢 公司名稱：{info.name} ({sid})",
                     f"💰 額定股本：(查閱財報中)",
@@ -62,20 +62,20 @@ def get_stock_info_text(sid, info_type):
         return f"獲取{info_type}失敗: {str(e)}"
 
 # ========= LINE Bot 回應邏輯 =========
-@app.route("/callback", methods=['POST'])[cite: 2]
+@app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers.get('X-Line-Signature')[cite: 2]
-    body = request.get_data(as_text=True)[cite: 2]
+    signature = request.headers.get('X-Line-Signature')
+    body = request.get_data(as_text=True)
     try:
-        handler.handle(body, signature)[cite: 2]
+        handler.handle(body, signature)
     except InvalidSignatureError:
-        abort(400)[cite: 2]
-    return 'OK'[cite: 2]
+        abort(400)
+    return 'OK'
 
-@handler.add(MessageEvent, message=TextMessage)[cite: 2]
+@handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     try:
-        msg = event.message.text.strip()[cite: 2]
+        msg = event.message.text.strip()
         
         # 處理詳細查詢請求
         for action in ["即時五檔", "三大法人", "技術指標", "公司介紹"]:
@@ -86,14 +86,14 @@ def handle_message(event):
                 return
 
         # 初始代碼輸入，顯示選單
-        sid = get_stock_id(msg)[cite: 2]
+        sid = get_stock_id(msg)
         if sid:
-            name = twstock.codes[sid].name if sid in twstock.codes else "未知"[cite: 2]
+            name = twstock.codes[sid].name if sid in twstock.codes else "未知"
             line_bot_api.reply_message(event.reply_token, create_stock_menu(sid, name))
         else:
-            line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))[cite: 2]
+            line_bot_api.reply_message(event.reply_token, TextMessage(text=f"找不到「{msg}」相關股票"))
     except Exception as e:
-        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"系統錯誤: {str(e)}"))[cite: 2]
+        line_bot_api.reply_message(event.reply_token, TextMessage(text=f"系統錯誤: {str(e)}"))
 
 def create_stock_menu(sid, name):
     return FlexSendMessage(
@@ -114,5 +114,5 @@ def create_stock_menu(sid, name):
     )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))[cite: 2]
-    app.run(host='0.0.0.0', port=port)[cite: 2]
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
