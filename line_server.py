@@ -33,25 +33,37 @@ def get_stock_id(name_or_id):
 
 # ========= 邏輯：處理各項數值化請求 =========
 def get_stock_info_text(sid, info_type):
+    # 建立模擬瀏覽器的標頭，避免被證交所阻擋
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
         if info_type == "即時五檔":
+            # twstock 的即時資料有時會因為連線被拒絕而失敗
             rt = twstock.realtime.get(sid)
             if rt['success']:
                 bids = rt['realtime']['best_bid_price']
                 asks = rt['realtime']['best_ask_price']
                 return f"📊 {sid} 即時五檔\n買進: {', '.join(bids)}\n賣出: {', '.join(asks)}"
-            return "暫時無法取得五檔數據"
+            return f"獲取即時數據失敗: {rt.get('rtmessage', '遠端主機拒絕連線')}"
             
         elif info_type == "技術指標":
             stock = twstock.Stock(sid)
+            if len(stock.price) < 5:
+                return f"📈 {sid} 資料量不足以計算指標"
             ma5 = stock.moving_average(stock.price, 5)
             return f"📈 {sid} 技術指標\n現價: {stock.price[-1]}\n5日均價: {ma5[-1]:.2f}"
             
         elif info_type == "三大法人":
-            # 加上 verify=False 解決 SSL 驗證失敗問題
             url = f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}"
             try:
-                res = requests.get(url, verify=False, timeout=10)
+                # 加上 headers 並設定 timeout
+                res = requests.get(url, verify=False, timeout=15, headers=headers)
+                
+                # 檢查是否成功取得內容
+                if not res.text.strip():
+                    return "連線證交所失敗：對方未回傳數據 (可能被暫時封鎖 IP)"
+                
                 data = res.json()
                 
                 if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
@@ -68,25 +80,20 @@ def get_stock_info_text(sid, info_type):
                             f"💪 投信：{trust} 股\n"
                             f"🏢 自營：{dealer} 股\n"
                             f"⚠️ 單位為「股」，正數為買超。")
-                return f"查無 {sid} 的法人資料 (可能非交易日或代碼錯誤)"
+                return f"查無 {sid} 的法人資料 (非交易日或代碼錯誤)"
             except Exception as req_e:
-                return f"連線證交所失敗: {str(req_e)}"
+                return f"連線證交所失敗: 服務器忙碌中，請稍後再試"
             
         elif info_type == "公司介紹":
             if sid in twstock.codes:
                 info = twstock.codes[sid]
-                res = [
-                    f"🏢 公司名稱：{info.name} ({sid})",
-                    f"💰 額定股本：(查閱財報中)",
-                    f"🏆 產業地位：該領域領先企業",
-                    f"📂 產業：{info.group}",
-                    f"🔍 細產業：{info.type}相關設備"
-                ]
-                return "\n".join(res)
+                return (f"🏢 公司名稱：{info.name} ({sid})\n"
+                        f"📂 產業：{info.group}\n"
+                        f"🔍 細產業：{info.type}")
             return f"查無 {sid} 的公司介紹"
             
     except Exception as e:
-        return f"獲取{info_type}失敗: {str(e)}"
+        return f"處理 {info_type} 時發生錯誤"
 
 # ========= LINE Bot 回應邏輯 =========
 @app.route("/callback", methods=['POST'])
