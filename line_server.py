@@ -55,7 +55,7 @@ def get_stock_info_text(sid, info_type):
             return f"📈 {sid} 技術指標\n現價: {stock.price[-1]}\n5日均價: {ma5[-1]:.2f}"
             
         elif info_type == "三大法人":
-            url = f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}"
+            url = f"https://www.twse.com.tw/zh/#foreign?response=json&stockNo={sid}"
             try:
                 # 加上 headers 並設定 timeout
                 res = requests.get(url, verify=False, timeout=15, headers=headers)
