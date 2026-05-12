@@ -3,3 +3,4 @@ line-bot-sdk==1.18.0
 requests
 twstock
 gunicorn
+beautifulsoup4
