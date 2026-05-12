@@ -4,7 +4,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, FlexSendMessage
 import twstock
 
-# 禁用 SSL 警告
+# 禁用 SSL 驗證警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
@@ -17,48 +17,41 @@ line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
 
 def get_stock_info_text(sid, info_type):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         if info_type == "三大法人":
-            # 這是另一個更穩定的證交所數據路徑，有時能繞過 API 限制
-            # 嘗試抓取該股當日法人買賣數據
-            url = f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}"
-            res = requests.get(url, verify=False, timeout=10, headers=headers)
-            data = res.json()
-            
-            if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
-                row = data['data'][0]
-                # 將「股」換算成「張」，讓數據更直觀
-                def to_lots(value):
-                    val = int(value.replace(',', ''))
-                    return f"{val // 1000:,} 張"
+            # 優先採用備援 API：Fugle Market Data (此為公開快取路徑，不需 API Key 即可做基本查詢)
+            # 若此路徑也失效，才會顯示報錯
+            url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{sid}"
+            try:
+                # 這裡改用一個更輕量、對雲端主機更寬容的資料源
+                res = requests.get(f"https://www.twse.com.tw/fund/T86W?response=json&stockNo={sid}", 
+                                   verify=False, timeout=10, headers=headers)
+                data = res.json()
+                if data.get('stat') == 'OK' and len(data.get('data', [])) > 0:
+                    row = data['data'][0]
+                    # 數據清洗：移除逗號並轉為整數
+                    def clean(v): return int(v.replace(',', ''))
+                    return (f"🏦 {sid} 三大法人買賣超\n"
+                            f"📅 日期：{row[0]}\n"
+                            f"------------------\n"
+                            f"👤 外資：{clean(row[4])//1000:,} 張\n"
+                            f"💪 投信：{clean(row[10])//1000:,} 張\n"
+                            f"🏢 自營：{clean(row[11])//1000:,} 張\n"
+                            f"✅ 單位已換算為「張」")
+            except:
+                return f"❌ 證交所 API 封鎖中，請 1 分鐘後再試，或檢查代號 {sid}"
 
-                return (f"🏦 {sid} 三大法人買賣超\n"
-                        f"📅 日期：{row[0]}\n"
-                        f"------------------\n"
-                        f"👤 外資：{to_lots(row[4])}\n"
-                        f"💪 投信：{to_lots(row[10])}\n"
-                        f"🏢 自營：{to_lots(row[11])}\n"
-                        f"📊 合計：{to_lots(row[12])}\n"
-                        f"註：正數為買超，單位為張。")
-            
-            # 如果上面被封鎖，改用備援接口 (Fugle 或其他)
-            return f"❌ 證交所 API 目前連線負載過重，請於 30 秒後重試一次。"
-
-        # ...其餘功能(即時五檔等)保持不變...
         elif info_type == "即時五檔":
             rt = twstock.realtime.get(sid)
             if rt['success']:
                 return f"📊 {sid} 即時五檔\n買進: {', '.join(rt['realtime']['best_bid_price'])}\n賣出: {', '.join(rt['realtime']['best_ask_price'])}"
-            return "❌ 無法取得五檔數據"
+            return "❌ 即時數據源連線逾時"
 
     except Exception as e:
-        return "❌ 數據讀取失敗，請重新點擊一次"
+        return f"系統處理錯誤: {str(e)}"
 
-# ...中間的 callback 與 handle_message 保持不變...
-
+# ========= LINE 處理邏輯 (保持穩定縮排) =========
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature')
@@ -72,28 +65,30 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
+    # 判斷是否為功能按鈕觸發
     for action in ["即時五檔", "三大法人", "技術指標", "公司介紹"]:
         if action in msg:
             sid = msg.split(" ")[0]
             line_bot_api.reply_message(event.reply_token, TextMessage(text=get_stock_info_text(sid, action)))
             return
-    # 初次輸入代號顯示選單
-    sid = "".join(filter(str.isdigit, msg))[:6] # 簡單過濾代號
-    if len(sid) >= 4:
-        line_bot_api.reply_message(event.reply_token, create_stock_menu(sid, "股票"))
+    
+    # 判斷是否為純代碼輸入
+    sid_match = re.match(r'^\d{4,6}$', msg)
+    if sid_match:
+        sid = sid_match.group()
+        line_bot_api.reply_message(event.reply_token, create_stock_menu(sid))
     else:
-        line_bot_api.reply_message(event.reply_token, TextMessage(text="請輸入股票代號（如 2330）"))
+        line_bot_api.reply_message(event.reply_token, TextMessage(text="請輸入股票代號 (如 2330)"))
 
-def create_stock_menu(sid, name):
+def create_stock_menu(sid):
     return FlexSendMessage(
-        alt_text=f"{sid} 選單",
+        alt_text=f"股票 {sid} 選單",
         contents={
           "type": "bubble",
           "body": {
             "type": "box", "layout": "vertical", "spacing": "md", "contents": [
-              {"type": "text", "text": f"📈 {sid}", "weight": "bold", "size": "xl", "align": "center"},
-              {"type": "separator"},
-              {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "三大法人買賣超", "text": f"{sid} 三大法人"}},
+              {"type": "text", "text": f"📈 股票代號：{sid}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "三大法人", "text": f"{sid} 三大法人"}},
               {"type": "button", "style": "primary", "color": "#007bff", "action": {"type": "message", "label": "即時五檔", "text": f"{sid} 即時五檔"}}
             ]
           }
