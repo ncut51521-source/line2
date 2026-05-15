@@ -1,7 +1,7 @@
-import os, re, requests
+import os, re
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, ImageSendMessage, FlexSendMessage
+from linebot.models import MessageEvent, TextMessage, FlexSendMessage
 
 app = Flask(__name__)
 
@@ -26,45 +26,51 @@ def callback():
 def handle_message(event):
     msg = event.message.text.strip()
     
-    # 判斷是否點擊了選單按鈕 (格式如: "2330 三大法人")
-    if " " in msg:
-        parts = msg.split(" ")
-        sid = parts[0]
-        # 無論點擊什麼，我們都回傳 K 線圖，因為這最穩定
-        img_url = f"https://chart.capital.com.tw/Chart/TWSTOCK/STK_{sid}.aspx" # 示意圖源
-        # 另一種更穩定的圖源 (Yahoo 圖片)
-        img_url = f"https://s.yimg.com/nb/tw/tw_ec_1.0.0/static/tws/stk/chart/{sid}.png"
-        
-        line_bot_api.reply_message(
-            event.reply_token,
-            ImageSendMessage(
-                original_content_url=img_url,
-                preview_image_url=img_url
-            )
-        )
-        return
-
-    # 輸入純數字代號顯示選單
+    # 處理輸入純數字代號
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_stock_menu(msg))
+        return
+
+    # 處理按鈕觸發
+    if " " in msg:
+        sid = msg.split(" ")[0]
+        line_bot_api.reply_message(event.reply_token, create_analysis_card(sid))
 
 def create_stock_menu(sid):
     return FlexSendMessage(
-        alt_text=f"{sid} 功能選單",
+        alt_text=f"{sid} 分析選單",
         contents={
           "type": "bubble",
           "body": {
             "type": "box", "layout": "vertical", "spacing": "md", "contents": [
-              {"type": "text", "text": f"📈 股票分析：{sid}", "weight": "bold", "size": "xl", "align": "center"},
-              {"type": "separator"},
-              {"type": "button", "style": "primary", "color": "#e74c3c", "action": {"type": "message", "label": "查看當日 K 線圖", "text": f"{sid} K線圖"}},
-              {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "三大法人買賣超", "text": f"{sid} 三大法人"}},
-              {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "詳細財經數據", "uri": f"https://tw.stock.yahoo.com/quote/{sid}"}}
+              {"type": "text", "text": f"📈 台股分析：{sid}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "button", "style": "primary", "color": "#e74c3c", "action": {"type": "message", "label": "查看即時 K 線圖", "text": f"{sid} K線"}},
+              {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "三大法人資訊", "text": f"{sid} 法人"}}
+            ]
+          }
+        }
+    )
+
+def create_analysis_card(sid):
+    # 這是最強保險：直接生成連結卡片，避開伺服器請求限制
+    return FlexSendMessage(
+        alt_text=f"{sid} 數據分析",
+        contents={
+          "type": "bubble",
+          "header": {
+            "type": "box", "layout": "vertical", "contents": [
+              {"type": "text", "text": f"📊 {sid} 數據整合", "weight": "bold", "color": "#ffffff"}
+            ], "backgroundColor": "#2c3e50"
+          },
+          "body": {
+            "type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+              {"type": "text", "text": "由於伺服器連線受限，請點擊下方按鈕獲取即時數據：", "wrap": True, "size": "sm"},
+              {"type": "button", "style": "link", "action": {"type": "uri", "label": "📈 查看技術 K 線", "uri": f"https://tw.stock.yahoo.com/quote/{sid}/chart"}},
+              {"type": "button", "style": "link", "action": {"type": "uri", "label": "🏦 查看法人進出", "uri": f"https://tw.stock.yahoo.com/quote/{sid}/institutional-trading"}}
             ]
           }
         }
     )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
