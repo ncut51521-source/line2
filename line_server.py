@@ -1,10 +1,7 @@
-import os, re, requests, urllib3, json
+import os, re, requests
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, FlexSendMessage
-
-# 徹底禁用 SSL 驗證警告
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from linebot.models import MessageEvent, TextMessage, ImageSendMessage, FlexSendMessage
 
 app = Flask(__name__)
 
@@ -14,24 +11,6 @@ LINE_HANDLER_SECRET = "c1ef088ebc7f9dd0f04b5d7a7db03dfc"
 
 line_bot_api = LineBotApi(LINE_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_HANDLER_SECRET)
-
-def get_stock_info_text(sid, info_type):
-    # 這是最後一道防線：如果 API 全部失敗，就回傳漂亮的 Flex 連結卡片
-    if info_type == "三大法人":
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={sid}"
-        try:
-            res = requests.get(url, timeout=5)
-            data = res.json()
-            if data.get('msg') == 'success' and len(data.get('data')) > 0:
-                latest = data['data'][-1]
-                diff = (int(latest.get('buy', 0)) - int(latest.get('sell', 0))) // 1000
-                return f"🏦 {sid} 三大法人\n📅 {latest.get('date')}\n📊 買賣超：{diff:,} 張"
-        except:
-            pass # 失敗則走下方的「備援卡片」
-        return create_backup_link(sid, "三大法人", f"https://tw.stock.yahoo.com/quote/{sid}/institutional-trading")
-
-    elif info_type == "即時五檔":
-        return create_backup_link(sid, "即時行情", f"https://tw.stock.yahoo.com/quote/{sid}")
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -46,16 +25,26 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     msg = event.message.text.strip()
+    
+    # 判斷是否點擊了選單按鈕 (格式如: "2330 三大法人")
     if " " in msg:
         parts = msg.split(" ")
-        sid, action = parts[0], parts[1]
-        res = get_stock_info_text(sid, action)
-        if isinstance(res, str):
-            line_bot_api.reply_message(event.reply_token, TextMessage(text=res))
-        else:
-            line_bot_api.reply_message(event.reply_token, res)
+        sid = parts[0]
+        # 無論點擊什麼，我們都回傳 K 線圖，因為這最穩定
+        img_url = f"https://chart.capital.com.tw/Chart/TWSTOCK/STK_{sid}.aspx" # 示意圖源
+        # 另一種更穩定的圖源 (Yahoo 圖片)
+        img_url = f"https://s.yimg.com/nb/tw/tw_ec_1.0.0/static/tws/stk/chart/{sid}.png"
+        
+        line_bot_api.reply_message(
+            event.reply_token,
+            ImageSendMessage(
+                original_content_url=img_url,
+                preview_image_url=img_url
+            )
+        )
         return
 
+    # 輸入純數字代號顯示選單
     if re.match(r'^\d{4}$', msg):
         line_bot_api.reply_message(event.reply_token, create_stock_menu(msg))
 
@@ -66,28 +55,16 @@ def create_stock_menu(sid):
           "type": "bubble",
           "body": {
             "type": "box", "layout": "vertical", "spacing": "md", "contents": [
-              {"type": "text", "text": f"🎯 股票代號：{sid}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "text", "text": f"📈 股票分析：{sid}", "weight": "bold", "size": "xl", "align": "center"},
+              {"type": "separator"},
+              {"type": "button", "style": "primary", "color": "#e74c3c", "action": {"type": "message", "label": "查看當日 K 線圖", "text": f"{sid} K線圖"}},
               {"type": "button", "style": "primary", "color": "#28a745", "action": {"type": "message", "label": "三大法人買賣超", "text": f"{sid} 三大法人"}},
-              {"type": "button", "style": "primary", "color": "#007bff", "action": {"type": "message", "label": "即時五檔查詢", "text": f"{sid} 即時五檔"}}
-            ]
-          }
-        }
-    )
-
-def create_backup_link(sid, label, url):
-    return FlexSendMessage(
-        alt_text=f"點擊查看 {sid} {label}",
-        contents={
-          "type": "bubble",
-          "body": {
-            "type": "box", "layout": "vertical", "contents": [
-              {"type": "text", "text": f"⚠️ {sid} 數據存取受限", "weight": "bold", "color": "#ff0000"},
-              {"type": "text", "text": "伺服器 IP 目前遭阻擋，請點擊下方直接查看數據：", "wrap": True, "size": "sm", "margin": "md"},
-              {"type": "button", "margin": "xl", "style": "link", "height": "sm", "action": {"type": "uri", "label": f"查看 {label}", "uri": url}}
+              {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "詳細財經數據", "uri": f"https://tw.stock.yahoo.com/quote/{sid}"}}
             ]
           }
         }
     )
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
